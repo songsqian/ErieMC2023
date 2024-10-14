@@ -1,0 +1,325 @@
+---
+title: "Lake Erie Microcystin Risk Assessment -- Presenting Sequantial Updating Results"
+author: "Song Qian"
+date: "7/12/2023"
+output: 
+  pdf_document: 
+    toc: yes
+    number_sections: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Initial setup
+```{r}
+source("FrontMatter.R")
+packages(reshape)
+packages(tidyverse)
+packages(DescTools)
+load(paste(saveDIR, "eriedata2019.RData", sep="/"))
+load(paste(saveDIR, "eriedata2021.RData", sep="/"))
+                       ## subseting data
+                       ## prior
+                       ## Stan model and input function
+load(paste(saveDIR, "seq2019.RData", sep="/"))
+load(paste(saveDIR, "seq2020.RData", sep="/"))
+load(paste(saveDIR, "seq2021.RData", sep="/"))
+load(paste(saveDIR, "prior19_21.RData", sep="/"))
+```
+
+## Presenting Fitted Models
+
+Function
+```{r}
+## R functions for evaluating sequential updating fit and forecasting
+## plus Bayes p-values
+seqBMA_eval <- function(data = tmpdata, stan_fitted=seq_2019$fitted, 
+                     Xlab="Chla ($\\mu$g/L)", priorAdd=priorSn.add2019,
+                     Ylab="Particulate Microcystin ($\\mu$g/L)",
+                     Lab1=c(c(0.1, 1, 10, 50, 100, 200, 250)),
+  		               Lab2=c(0.01, 0.1, 1, 10, 50, 100,300), 
+			               x="Chla", y="part_microcystin", txtX=log(3), txtY=log(50)){
+  wks <- as.numeric(ordered(data$BiWeek))
+  wksL <- as.numeric(levels(ordered(data$BiWeek)))
+  nsize <- table(wks)
+  sn <- wks 
+  Xlim <- round(range(log(data[, x]))+c(-0.5, 0.5))
+  Ylim <- round(range(c(log(0.01), log(data[,y]))))
+  xplot <- seq(Xlim[1], Xlim[2], ,20)
+  xx <- log(data[,x])
+  yy <- log(data[,y])
+  mssq <- mssq_nsn <- rvmatrix(NA, nrow=max(nsize), ncol=max(sn)-1)
+  Bayes_p <- Bayes_pnsn <- matrix(NA, nrow=max(nsize), ncol=max(sn)-1)
+  rvperc <- rv()
+  Obs <- list()
+  wts <- NULL
+  pnlExp <- list()
+  for (i in 1:max(sn)){
+    add_stan <- rvsims(as.matrix(as.data.frame(rstan::extract(stan_fitted[[i]]$fits[[1]], pars=c("beta0","delta", "phi", "d0","dd","dp","sigma")))))
+    nstd_mnn <-  rvsims(as.matrix(as.data.frame(rstan::extract(stan_fitted[[i]]$fits[[2]], pars=c("beta0","delta", "phi", "d0","dd","dp","sigma", "sigma_dp","sigma_d0","sigma_dd")))))
+    nstd_biw <-  rvsims(as.matrix(as.data.frame(rstan::extract(stan_fitted[[i]]$fits[[3]], pars=c("beta0","delta", "phi", "d0","dd","dp","sigma", "sigma_dp","sigma_d0","sigma_dd")))))
+    NoSn_stan <-  rvsims(as.matrix(as.data.frame(rstan::extract(stan_fitted[[i]]$fits[[4]], pars=c("beta0","delta", "phi", "mu0","muD","muP","sigma", "sigmap","sigma0","sigmad")))))
+    wts <- rbind(wts, stan_fitted[[i]]$wts$pbma_BB_wts)
+    tmp <- wks == i        ## only group data
+    if (i<max(sn)) tmp2 <- wks == i+1        ## next group data
+    tempdata <- data[tmp,]
+    tempdata2 <- data[tmp2,]
+    mon1 <- sort(unique(tempdata$Mon_ord))[1]
+    mon2 <- sort(unique(tempdata2$Mon_ord))[1]
+    print(c(i, range(log(tempdata2[,x]))))
+    ## additive model
+    bb0_add <- add_stan["beta0"]+add_stan["d0"] + 
+      priorAdd[[mon2]]$d0-priorAdd[[mon1]]$d0 
+    dde_add <- add_stan["delta"]+add_stan["dd"] + 
+      priorAdd[[mon2]]$dd-priorAdd[[mon1]]$dd 
+    pph_add <- add_stan["phi"]+add_stan["dp"] + 
+      priorAdd[[mon2]]$dp-priorAdd[[mon1]]$dp 
+    y_add <- hockey_smooth(xplot, beta0=bb0_add, delt=dde_add, 
+                          phi=pph_add, theta=0.01*diff(Xlim))
+    ## nested monthly
+    bb0_nstM <- nstd_mnn["beta0"]+nstd_mnn["d0"]
+    dde_nstM <- nstd_mnn["delta"]+nstd_mnn["dd"]
+    pph_nstM <- nstd_mnn["phi"]+nstd_mnn["dp"]
+    y_nstM <- hockey_smooth(xplot, beta0=bb0_nstM, delt=dde_nstM, 
+                          phi=pph_nstM, theta=0.01*diff(Xlim))
+    ## nested biweekly
+    bb0_nstW <- nstd_biw["beta0"]+nstd_biw["d0"]
+    dde_nstW <- nstd_biw["delta"]+nstd_biw["dd"]
+    pph_nstW <- nstd_biw["phi"]+nstd_biw["dp"]
+    y_nstW <- hockey_smooth(xplot, beta0=bb0_nstW, delt=dde_nstW, 
+                          phi=pph_nstW, theta=0.01*diff(Xlim))
+    ## No season
+    bb0_nosn <- NoSn_stan["beta0"]
+    dde_nosn <- NoSn_stan["delta"]
+    pph_nosn <- NoSn_stan["phi"]
+    y_nosn <- hockey_smooth(xplot, beta0=bb0_nosn, delt=dde_nosn, 
+                          phi=pph_nosn, theta=0.01*diff(Xlim))
+    ## Weighted y
+    y_wtd <- wts[i,1]*y_add+wts[i,2]*y_nstM+wts[i,3]*y_nstW+wts[i,4]*y_nosn
+    y_wtd_sum <- summary(y_wtd)
+    ### predictive y
+    y.add2 <- rvnorm(1, mean=hockey_smooth(xplot, beta0=bb0_add, delt=dde_add, 
+                     phi=pph_add, theta=0.01*diff(Xlim)), sd=rvsims(add_stan$sigma))
+    y.nstM2 <- rvnorm(1, hockey_smooth(xplot, beta0=bb0_nstM, delt=dde_nstM, 
+                          phi=pph_nstM, theta=0.01*diff(Xlim)), sd=rvsims(nstd_mnn$sigma))
+    y.nstW2 <- rvnorm(1, hockey_smooth(xplot, beta0=bb0_nstW, delt=dde_nstW, 
+                          phi=pph_nstW, theta=0.01*diff(Xlim)), sd=rvsims(nstd_biw$sigma))
+    y.nosn2 <- rvnorm(1, hockey_smooth(xplot, beta0=bb0_nosn, delt=dde_nosn, 
+                          phi=pph_nosn, theta=0.01*diff(Xlim)), sd=rvsims(NoSn_stan$sigma))
+    y.wtd2 <- wts[i,1]*y.add2+wts[i,2]*y.nstM2+wts[i,3]*y.nstW2+wts[i,4]*y.nosn2
+    y.wtd2_sum <- summary(y.wtd2)
+    plot(xx, yy, xlab=Xlab, ylab=Ylab, type="n", axes=F, 
+         xlim=Xlim, ylim=Ylim)
+    axis(1, at=log(c(0.1, 1, 10, 50, 100, 200, 250)),
+	       label=Lab1)
+	  axis(2, at=log(c(0.01,0.1,1,10,50,100,300)), label=Lab2)    
+##	  polygon(x=c(xplot, rev(xplot)), y=c(y.wtd2_sum$`2.5%`, rev(y.wtd2_sum$`97.5%`)), 
+##	          density=-1, col=grey(0.7), border = F)
+	  polygon(x=c(xplot, rev(xplot)), y=c(y_wtd_sum$`2.5%`, rev(y_wtd_sum$`97.5%`)), 
+	          density=-1, col=grey(0.75), border = F)
+	  lines(xplot, y_wtd_sum$mean) 
+	  points(xx, yy, col=grey(0.5))
+    points(log(tempdata[,x]), log(tempdata[,y]), pch=16)
+    ##text(x=(xy <- ABCCoords("topleft", region = "plot"))$xy, 
+    ## labels = i)
+    text(x=txtX, y=txtY, label=i)
+    if (i<max(sn)) {
+      points(log(tempdata2[,x]), log(tempdata2[,y]), col="red", pch=16)
+#      tmp <- seq(range(log(tempdata2[,x]))[1], range(log(tempdata2[,x]))[2],, 20)
+      Obs[[i]] <- log(tempdata2[,y])
+      y_add2 <- rvnorm(1, mean=hockey_smooth(log(tempdata2[,x]), beta0=bb0_add, delt=dde_add, 
+                          phi=pph_add, theta=0.01*diff(Xlim)), sd=rvsims(add_stan$sigma))
+      y_nstM2 <- rvnorm(1, hockey_smooth(log(tempdata2[,x]), beta0=bb0_nstM, delt=dde_nstM, 
+                          phi=pph_nstM, theta=0.01*diff(Xlim)), sd=rvsims(nstd_mnn$sigma))
+      y_nstW2 <- rvnorm(1, hockey_smooth(log(tempdata2[,x]), beta0=bb0_nstW, delt=dde_nstW, 
+                          phi=pph_nstW, theta=0.01*diff(Xlim)), sd=rvsims(nstd_biw$sigma))
+      y_nosn2 <- rvnorm(1, hockey_smooth(log(tempdata2[,x]), beta0=bb0_nosn, delt=dde_nosn, 
+                          phi=pph_nosn, theta=0.01*diff(Xlim)), sd=rvsims(NoSn_stan$sigma))
+      y_wtd2 <- wts[i,1]*y_add2+wts[i,2]*y_nstM2+wts[i,3]*y_nstW2+wts[i,4]*y_nosn2
+      rvperc[i] <- rvsims(unlist(y_wtd2))
+      ttmp <- tempdata2[,y]
+      Bayes_p[1:length(y_wtd2), i] <- Pr(y_wtd2 > log(ifelse(ttmp==0.1, NA, ttmp)))
+      Bayes_pnsn[1:length(y_wtd2), i] <- Pr(y_nosn2 > log(ifelse(ttmp==0.1, NA, ttmp)))
+      mssq[1:length(y_wtd2), i] <- mean((y_wtd2 - log(ifelse(ttmp==0.1, NA, ttmp)))^2, na.rm=T)
+      mssq_nsn[1:length(y_wtd2), i] <- mean((y_nosn2 - log(ifelse(ttmp==0.1, NA, ttmp)))^2, na.rm=T)
+    }
+    box()
+    pnlExp[[i]] <- list(x=xx, y=yy, Xlim=Xlim, Ylim=Ylim, xline=xplot, wtd_y_mean=y_wtd_sum, wtd_y=summary(y.wtd2), 
+                        data1=tempdata, data2=tempdata2)
+  }
+	return(list(wts=wts, RVpct=rvperc, obs=Obs, BP=Bayes_p, BPnsn=Bayes_pnsn, mssq=mssq, mssq_nsn=mssq_nsn, panel.export=pnlExp))    
+}
+```
+
+Figures for MS
+```{R}
+## 2019
+temp<-(!is.na(eriedata2019$part_microcystin))&(!is.na(eriedata2019$Chla))&(eriedata2019$Chla>0)& 
+  (eriedata2019$part_microcystin>0)&(eriedata2019$Month>=5 & eriedata2019$Month<=10)
+tmpdata <- eriedata2019[temp,]
+tmpdata$Mon_ord <- as.numeric(ordered(tmpdata$Month, levels=5:10))
+tmpdata$Yr_ord <- as.numeric(ordered(tmpdata$Year))
+tmpdata$sn_nstd <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$Month, sep=":")))
+## for biweek season
+tmpdata$sn_nstd2w <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$BiWeek, sep=":")))
+
+tikz(file="Seq_BMA_2019.tex", width=8, height=6.75, standAlone=F)
+par(mfrow=c(3,4), oma=c(3,3,3,1), mar=c(1.25,1.5,0.5,0.5), mgp=c(1.5, 0.125,0), tck=-0.01, las=1)
+BMA_2019 <- seqBMA_eval(stan_fitted=seq_2019$fitted, txtX=log(2))
+mtext("BMA Model (2019)", side=3, line=0, outer=T, las=0)
+mtext("Particulate Microcystin ($\\mu$g/L)", side=2, line = 0.5, outer=T, las=0)
+mtext("Chla ($\\mu$g/L)", side=1, line = 0.5, outer=T, las=0)
+dev.off()
+
+## 2020
+temp<-(!is.na(eriedata2020$part_microcystin))&(!is.na(eriedata2020$Chla))&(eriedata2020$Chla>0)& 
+  (eriedata2020$part_microcystin>0)&(eriedata2020$Month>=5 & eriedata2020$Month<=10)
+tmpdata <- eriedata2020[temp,]
+tmpdata$Mon_ord <- as.numeric(ordered(tmpdata$Month, levels=5:10))
+tmpdata$Yr_ord <- as.numeric(ordered(tmpdata$Year))
+tmpdata$sn_nstd <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$Month, sep=":")))
+## for biweek season
+tmpdata$sn_nstd2w <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$BiWeek, sep=":")))
+
+tikz(file="Seq_BMA_2020.tex", width=8, height=6.75, standAlone=F)
+par(mfrow=c(3,4), oma=c(3,3,3,1), mar=c(1.25,1.5,0.5,0.5), mgp=c(1.5, 0.125,0), tck=-0.01, las=1)
+BMA_2020 <- seqBMA_eval(stan_fitted=seq_2020$fitted, priorAdd=priorSn.add2020, txtX=log(1), txtY=log(10))
+mtext("BMA Model (2020)", side=3, line=0, outer=T, las=0)
+mtext("Particulate Microcystin ($\\mu$g/L)", side=2, line = 0.5, outer=T, las=0)
+mtext("Chla ($\\mu$g/L)", side=1, line = 0.5, outer=T, las=0)
+dev.off()
+
+## 2021
+temp<-(!is.na(eriedata2021$part_microcystin))&(!is.na(eriedata2021$Chla))&(eriedata2021$Chla>0)& 
+  (eriedata2021$part_microcystin>0)&(eriedata2021$Month>=5 & eriedata2021$Month<=10)
+tmpdata <- eriedata2021[temp,]
+tmpdata$Mon_ord <- as.numeric(ordered(tmpdata$Month, levels=5:10))
+tmpdata$Yr_ord <- as.numeric(ordered(tmpdata$Year))
+tmpdata$sn_nstd <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$Month, sep=":")))
+## for biweek season
+tmpdata$sn_nstd2w <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$BiWeek, sep=":")))
+
+tikz(file="Seq_BMA_2021.tex", width=8, height=6.75, standAlone=F)
+par(mfrow=c(3,4), oma=c(3,3,3,1), mar=c(1.25,1.5,0.5,0.5), mgp=c(1.5, 0.125,0), tck=-0.01, las=1)
+BMA_2021 <- seqBMA_eval(stan_fitted=seq_2021$fitted, priorAdd=priorSn.add2021, txtX=log(0.5), txtY=log(3))
+mtext("BMA Model (2021)", side=3, line=0, outer=T, las=0)
+mtext("Particulate Microcystin ($\\mu$g/L)", side=2, line = 0.5, outer=T, las=0)
+mtext("Chla ($\\mu$g/L)", side=1, line = 0.5, outer=T, las=0)
+dev.off()
+```
+
+Plotting selected panels with predictive range (predicting y)
+
+```{R}
+select.plot <- function(datalist=BMA_2019$panel.export[[4]], i=4, txtX=log(3), txtY=log(50), yr=2019){
+  Lab1=c(c(0.1, 1, 10, 50, 100, 200, 250))
+Lab2=c(0.01, 0.1, 1, 10, 50, 100,300)
+plot(x=datalist$x, y=datalist$y, xlab="", ylab="", type="n", axes=F, 
+     xlim=datalist$Xlim, ylim=datalist$Ylim)
+    axis(1, at=log(c(0.1, 1, 10, 50, 100, 200, 250)),
+	       label=Lab1)
+	  axis(2, at=log(c(0.01,0.1,1,10,50,100,300)), label=Lab2)
+	  polygon(x=c(datalist$xline, rev(datalist$xline)), 
+	          y=c(datalist$wtd_y$`2.5%`, rev(datalist$wtd_y$`97.5%`)), 
+	          density=-1, col=grey(0.85), border = F)
+	  polygon(x=c(datalist$xline, rev(datalist$xline)), 
+	          y=c(datalist$wtd_y_mean$`2.5%`, rev(datalist$wtd_y_mean$`97.5%`)), 
+	          density=-1, col=grey(0.65), border = F)
+	  lines(datalist$xline, datalist$wtd_y_mean$mean) 
+	  points(datalist$x, datalist$y, col=grey(0.5))
+    points(log(datalist$data1[,"Chla"]), log(datalist$data1[,"part_microcystin"]), pch=16)
+    points(log(datalist$data2[,"Chla"]), log(datalist$data2[,"part_microcystin"]), 
+           pch=16, col="red")
+    text(x=txtX, y=txtY, label=paste(i, yr, sep=", "))
+    box()
+    invisible()
+}
+
+tikz(file="predictive.tex", width=5, height=6, standAlone=F)
+par(mfrow=c(3,2), oma=c(3,3,3,1), mar=c(1.25,1.5,0.5,0.5), mgp=c(1.5, 0.125,0), tck=-0.01, las=1)
+## panels for 2019
+select.plot(datalist=BMA_2019$panel.export[[4]], txtX=log(2.5), i=4, yr=2019)
+select.plot(datalist=BMA_2019$panel.export[[5]], txtX=log(2.5), i=5, yr=2019)
+select.plot(datalist=BMA_2020$panel.export[[3]], txtX=log(1), txtY=log(10), i=3, yr=2020)
+select.plot(datalist=BMA_2020$panel.export[[5]], txtX=log(1), txtY=log(10), i=5, yr=2020)
+select.plot(datalist=BMA_2021$panel.export[[6]], txtX=log(0.75), txtY=log(3), i=6, yr=2021)
+select.plot(datalist=BMA_2021$panel.export[[7]], txtX=log(0.75), txtY=log(3), i=7, yr=2021)
+mtext("Particulate Microcystin ($\\mu$g/L)", side=2, line = 0.5, outer=T, las=0)
+mtext("Chla ($\\mu$g/L)", side=1, line = 0.5, outer=T, las=0)
+dev.off()
+```
+
+Presenting BMA weights
+```{R}
+Wts <- as.data.frame(rbind(BMA_2019$wts,BMA_2020$wts, BMA_2021$wts))
+Wts$Year <- c(rep(2019, dim(BMA_2019$wts)[1]), rep(2020, dim(BMA_2020$wts)[1]), 
+              rep(2021, dim(BMA_2021$wts)[1]))
+names(Wts) <- c("Additive", "Nested Mon", "Nested Biweek", "No Season", "Year")
+Wts$weeks <- c(1:dim(BMA_2019$wts)[1], 1:dim(BMA_2020$wts)[1], 
+               1:dim(BMA_2021$wts)[1])
+Wts_Long <- melt(Wts, id.var=c("weeks", "Year"))
+
+tikz(file="BMA_weights.tex", height=3.5, width=6, standAlone = F)
+#trellis.par.set(theme = canonical.theme("postscript", col=FALSE))
+trellis.par.set(superpose.line=list(col=c("darkgray", "blue", "red", "cyan")))
+key <- simpleKey(levels(ordered(Wts_Long$variable)),
+                 cex=0.5, space="top", points=F, lines=T, columns=4)
+xyplot(value~weeks|factor(Year), data=Wts_Long, groups = variable, key=key, 
+       panel=function(x, y, ...){
+         panel.xyplot(x, y, type="l",...)
+       }, xlab="Sampling Seasons", ylab="Model Weights", 
+       layout=c(3,1),  par.settings = list(superpose.line = list(col = c("darkgray", "blue", "red", "cyan"))))
+dev.off()
+
+```
+
+## Comparing Non-seasonal model to Bayesian average
+
+Comparing the mean sum of squares of the predicted and observed
+```{R nsn v bma}
+## 2019
+mssq2019 <- summary(as.vector(sims(BMA_2019$mssq)))
+mssq_nsn2019 <- summary(as.vector(sims(BMA_2019$mssq_nsn)))
+mssq2020 <- summary(as.vector(sims(BMA_2020$mssq)))
+mssq_nsn2020 <- summary(as.vector(sims(BMA_2020$mssq_nsn)))
+mssq2021 <- summary(as.vector(sims(BMA_2021$mssq)))
+mssq_nsn2021 <- summary(as.vector(sims(BMA_2021$mssq_nsn)))
+
+tikz(file="msqcompare.tex", height=2.5, width=5, standAlone=F)
+par(mfrow=c(1,3), oma=c(3,3,3,1), mar=c(1.25,.5,1.5,0.5), mgp=c(1.5, 0.125,0), tck=-0.01, las=1)
+plot(c(0,1),c(1,2), type="n", xlim=range(c(mssq2019[c(2,5)], mssq_nsn2019[c(2,5)])), ylim=c(0.5,2.5), axes=F, xlab="MSQ", ylab="")
+axis(1)
+axis(2, at=c(1,2), labels = c("BMA","NSN"), outer = T, lty=0)
+points(x=as.vector(mssq2019)[3], y=1)
+points(x=as.vector(mssq_nsn2019)[3], y=2)
+lines(x=as.vector(mssq_nsn2019)[c(2,5)], y=c(2,2))
+lines(x=as.vector(mssq2019)[c(2,5)], y=c(1,1))
+box()
+mtext(side=3, "2019")
+
+plot(c(0,1),c(1,2), type="n", xlim=range(c(mssq2020[c(2,5)], mssq_nsn2020[c(2,5)])), ylim=c(0.5,2.5), axes=F, xlab="MSQ", ylab="")
+axis(1)
+##axis(2, at=c(1,2), labels = c("BMA","NSN"))
+points(x=as.vector(mssq2020)[3], y=1)
+points(x=as.vector(mssq_nsn2020)[3], y=2)
+lines(x=as.vector(mssq_nsn2020)[c(2,5)], y=c(2,2))
+lines(x=as.vector(mssq2020)[c(2,5)], y=c(1,1))
+box()
+mtext(side=3, "2020")
+
+plot(c(0,1),c(1,2), type="n", xlim=range(c(mssq2021[c(2,5)], mssq_nsn2021[c(2,5)])), ylim=c(0.5,2.5), axes=F, xlab="MSQ", ylab="")
+axis(1)
+##axis(2, at=c(1,2), labels = c("BMA","NSN"))
+points(x=as.vector(mssq2021)[3], y=1)
+points(x=as.vector(mssq_nsn2021)[3], y=2)
+lines(x=as.vector(mssq_nsn2021)[c(2,5)], y=c(2,2))
+lines(x=as.vector(mssq2021)[c(2,5)], y=c(1,1))
+box()
+mtext(side=3, "2021")
+mtext("log mean sum of squares", side=1, line = 0.5, outer=T, las=0)
+dev.off()
+
+```
