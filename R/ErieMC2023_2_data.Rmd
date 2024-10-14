@@ -1,0 +1,102 @@
+---
+title: Lake Erie Microcystin Risk Assessment -- Data Importing and Cleaning
+author: Song S. Qian, Craig A. Stow, Freya Rowland
+date: July 30, 2023
+output: pdf_document
+---
+
+## Initial setup
+```{r}
+source("FrontMatter.R")
+```
+
+## Reading and cleaning data and plot sampling sites using R map
+```{r}
+    ## non-detect (nd, bd, below detect) are replaced with 0
+    ## secchi >x is replaced with x (x = 7 or 5)
+
+eriedata2019 <- read.csv(paste(dataDIR, 
+                               "lake_erie_habs_2019.csv", sep="/"), 
+                         header=T)
+names(eriedata2019) <- c("date","station_name","station_depth","sample_depth",
+                         "sample_depth_category","time","Latitude","Longitude","wind_speed",
+                         "wave_height","sky","secchi_depth","ctd_temp",
+                         "ctd_specific_conductivity","ctd_beam_attenuation",
+                         "ctd_transmission","DO","PAR","turbidity","part_microcystin",
+                         "diss_microcystin","extracted_phycocyanin","Chla",
+                         "TP","TDP", "SRP","NH4","NOx",  "POC","PON","cdom","TSS","VSS")
+
+eriedata2019$Rdate<-as.Date(as.character(eriedata2019$date), 
+                        format="%m/%d/%Y")
+eriedata2019$Year <- format(eriedata2019$Rdate, "%Y")
+eriedata2019$Month <- as.numeric(format(eriedata2019$Rdate, "%m"))
+
+## removing non-detects in MC and Chla measurements
+temp <- as.character(eriedata2019$part_microcystin)
+eriedata2019$part_microcystin[temp == "<0.1"] <- 0.1
+eriedata2019$part_microcystin[temp == ""] <- NA
+eriedata2019$part_microcystin <- 
+  as.numeric(as.character(eriedata2019$part_microcystin))
+
+## SRP: "", "bd","nd","below detection"
+## DO
+## Surf_Temp
+## TSS
+## NO3
+eriedata2019$NOx <- as.character(eriedata2019$NOx)
+eriedata2019$NOx[eriedata2019$NOx=="" | eriedata2019$NOx=="<0.002"] <- NA
+eriedata2019$NOx <- as.numeric(eriedata2019$NOx)
+## NH4
+## Turbidity
+
+eriedata2019$Weeks <- as.numeric(format.Date(eriedata2019$Rdate, format="%W"))
+eriedata2019$BiWeek <- floor(eriedata2019$Weeks/2)
+
+save(eriedata2019 , file=paste(saveDIR,"eriedata2019.RData", sep="/"))
+```
+
+## Years 2020 and 2021
+```{r}
+eriedata2021 <- read.csv(paste(dataDIR, 
+                               "noaa-glerl-erie-habs-field-sampling-results-2020-2021.csv", sep="/"), 
+                         header=T)
+## unreadable characters (e.g., $^cicle$, $\mu$) removed
+names(eriedata2021) <- c("date","station_name","station_depth","sample_depth",
+                         "sample_depth_category","time","Latitude","Longitude","wind_speed",
+                         "wave_height","sky","secchi_depth","ctd_temp",
+                         "ctd_specific_conductivity","ctd_beam_attenuation",
+                         "ctd_transmission","DO","PAR","turbidity","part_microcystin",
+                         "diss_microcystin","extracted_phycocyanin","Chla",
+                         "TP","TDP", "SRP","NH4","NOx",  "POC","PON","cdom","TSS","VSS")
+  
+eriedata2021$Rdate<-as.Date(as.character(eriedata2021$date), 
+                        format="%m/%d/%Y")
+eriedata2021$Year <- format(eriedata2021$Rdate, "%Y")
+eriedata2021$Month <- as.numeric(format(eriedata2021$Rdate, "%m"))
+
+## removing non-detects in MC and Chla measurements
+temp <- as.character(eriedata2021$part_microcystin)
+eriedata2021$part_microcystin[temp == "<0.1"] <- 0.1
+eriedata2021$part_microcystin[temp == ""] <- NA
+eriedata2021$part_microcystin <- 
+  as.numeric(as.character(eriedata2021$part_microcystin))
+
+## SRP: "", "bd","nd","below detection"
+## DO
+## Surf_Temp
+## TSS
+## NO3
+eriedata2021$NOx <- as.character(eriedata2021$NOx)
+eriedata2021$NOx[eriedata2021$NOx=="" | eriedata2021$NOx=="<0.002"] <- NA
+eriedata2021$NOx <- as.numeric(eriedata2021$NOx)
+## NH4
+## Turbidity
+
+eriedata2021$Weeks <- as.numeric(format.Date(eriedata2021$Rdate, format="%W"))
+eriedata2021$BiWeek <- floor(eriedata2021$Weeks/2)
+
+eriedata2020 <- eriedata2021[eriedata2021$Year == 2020, ]
+eriedata2021 <- eriedata2021[eriedata2021$Year != 2020, ]
+save(eriedata2020, eriedata2021 , file=paste(saveDIR,"eriedata2021.RData", sep="/"))
+
+```

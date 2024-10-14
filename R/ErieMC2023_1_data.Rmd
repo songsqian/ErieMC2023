@@ -1,0 +1,136 @@
+---
+title: Lake Erie Microcystin Risk Assessment -- Data Importing and Cleaning
+author: Song S. Qian, Craig A. Stow, Freya Rowland
+date: June 30, 2019
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+## Initial setup
+```{r}
+source("FrontMatter.R")
+```
+
+## Reading and cleaning data and plot sampling sites using R map
+```{r}
+    ## non-detect (nd, bd, below detect) are replaced with 0
+    ## secchi >x is replaced with x (x = 7 or 5)
+
+eriedata <- read.csv(paste(dataDIR, "Erie2018.csv", sep="/"), 
+                     header=T)
+names(eriedata)[1] <- "station"
+eriedata$Rdate<-as.Date(as.character(eriedata$Date), 
+                        format="%m/%d/%Y")
+eriedata$Year <- format(eriedata$Rdate, "%Y")
+eriedata$Month <- as.numeric(format(eriedata$Rdate, "%m"))
+
+## removing non-detects in MC and Chla measurements
+temp <- as.character(eriedata$part_microcystin)
+eriedata$part_microcystin[temp == "bdl"] <- NA
+eriedata$part_microcystin[temp == ""] <- NA
+eriedata$part_microcystin <- 
+  as.numeric(as.character(eriedata$part_microcystin))
+
+## SRP: "", "bd","nd","below detection"
+eriedata$SRP <- as.character(eriedata$SRP)
+eriedata$SRP[eriedata$SRP=="" | eriedata$SRP=="nd" |
+                 eriedata$SRP=="bd" |
+                 eriedata$SRP=="below detection"] <- NA
+eriedata$SRP <- as.numeric(eriedata$SRP)
+
+## Urea: 
+eriedata$Urea <- as.character(eriedata$Urea)
+eriedata$Urea[eriedata$Urea=="" | eriedata$Urea=="bdl"] <- NA
+eriedata$Urea <- as.numeric(eriedata$Urea)
+
+## DO
+eriedata$DO <- as.character(eriedata$DO)
+eriedata$DO[eriedata$DO=="" | eriedata$DO=="ns" |
+                 eriedata$DO=="nd"] <- NA
+eriedata$DO <- as.numeric(eriedata$DO)
+
+## Surf_Temp
+eriedata$Surf_Temp<- as.character(eriedata$Surf_Temp)
+eriedata$Surf_Temp[eriedata$Surf_Temp=="" |
+                eriedata$Surf_Temp=="ns" |
+                 eriedata$Surf_Temp=="nd"] <- NA
+eriedata$Surf_Temp <- as.numeric(eriedata$Surf_Temp)
+
+## TSS
+eriedata$TSS <- as.character(eriedata$TSS)
+eriedata$TSS[eriedata$TSS=="" | eriedata$TSS=="nd"] <- NA
+eriedata$TSS <- as.numeric(eriedata$TSS)
+
+## VSS
+eriedata$VSS <- as.character(eriedata$VSS)
+eriedata$VSS[eriedata$VSS=="" | eriedata$VSS=="bdl" |
+                 eriedata$VSS=="nd"] <- NA
+eriedata$VSS <- as.numeric(eriedata$VSS)
+eriedata$VSS[eriedata$VSS < 0 ] <- NA ## one negative value
+
+## NO3
+eriedata$NO3 <- as.character(eriedata$NO3)
+eriedata$NO3[eriedata$NO3=="" | eriedata$NO3=="bdl" |
+                 eriedata$NO3=="bdll"] <- NA
+eriedata$NO3 <- as.numeric(eriedata$NO3)
+
+## NH4
+eriedata$NH4 <- as.character(eriedata$NH4)
+eriedata$NH4[eriedata$NH4=="" | eriedata$NH4=="bd" |
+                 eriedata$NH4=="bdl" |
+                 eriedata$NH4=="below dectection"] <- NA ## even a typo!!!
+eriedata$NH4 <- as.numeric(eriedata$NH4)
+eriedata$NH4[eriedata$NH4<0] <- NA ## one negative value
+
+## Turbidity
+eriedata$Turbidity <- as.character(eriedata$Turbidity)
+eriedata$Turbidity[eriedata$Turbidity=="" |
+    eriedata$Turbidity=="ns"] <- NA
+eriedata$Turbidity <- as.numeric(eriedata$Turbidity)
+    
+eriedata$Weeks <- as.numeric(format.Date(eriedata$Rdate, format="%W"))
+eriedata$BiWeek <- floor(eriedata$Weeks/2)
+
+save(eriedata , file=paste(saveDIR, "eriedataClean.RData", sep="/"))
+```
+
+## Plot sampling sites using R map
+```{r}
+### using maps:
+my.box<-function(xlim, ylim, ...){
+  segments(x0=xlim, y0=rep(ylim[1],2), x1=xlim, 
+           y1=rep(ylim[2], 2), ...)
+  segments(y0=ylim, x0=rep(xlim[1],2), y1=ylim, 
+           x1=rep(xlim[2], 2), ...)
+}
+
+plot(Latitude~Longitude, data=eriedata)
+erieLOC <- eriedata[!is.na(eriedata$Latitude) & 
+                      !is.na(eriedata$Longitude),
+                      c("Longitude", "Latitude")]
+coordinates(erieLOC) <- c("Longitude","Latitude")
+
+par(mar=rep(0, 4))
+map("usa", fill=TRUE, col="grey80", xlim=c(-83.5,-82.5),
+    ylim=c(41.4, 42.1))
+plot(erieLOC, pch=2, col="blue", add=T)
+
+maplocs <- map(projection="sp_mercator", wrap=TRUE, lwd=0.1,
+               col="grey", xlim=c(-180, 0),
+               interior=FALSE, orientation=c(90, 180, 0), 
+               add=TRUE, plot=FALSE)
+xrange <- range(maplocs$x, na.rm=TRUE)
+yrange <- range(maplocs$y, na.rm=TRUE)
+aspect <- abs(diff(yrange))/abs(diff(xrange))
+    # customised to 6.5 by 4.5 figure size
+par(fig=c(0.5, 0.99, 0.99 - 0.5*aspect*4.5/6.5, 0.99),
+    mar=rep(0, 4), new=TRUE)
+plot.new()
+plot.window(xlim=c(1,2.00), ylim=c(0.45,1))
+map(projection="sp_mercator", wrap=TRUE, lwd=0.25, fill=F,
+    col=gray(0.25), interior=TRUE, orientation=c(90, 180, 0),
+    add=TRUE)
+my.box(xlim=c(1.7-0.015,1.725-0.015), ylim=c(0.79, 0.81))
+
+```

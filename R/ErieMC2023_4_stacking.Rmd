@@ -1,0 +1,812 @@
+---
+title: "Lake Erie Microcystin Risk Assessment -- Model Averaging"
+author: "Song Qian"
+date: "8/15/2023"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Initial setup
+```{r}
+source("FrontMatter.R")
+packages(loo)
+load(paste(saveDIR, "eriedata2019.RData", sep="/"))
+load(paste(saveDIR, "eriedata2021.RData", sep="/"))
+source("sequentialANN.R")## year-end updating 
+source("sequentialSN.R") 
+source("sequentialSN_BMA.R") ## functions for input data
+## R functions for 
+## sub-setting data
+## prior functions
+## Stan models and input functions
+## compiling Stan models -- need to recompile from time to time
+## within-year updating without season
+## stan_mod_no_cens <- stan_model(model_code = stan_model1)
+## stan_mod_cens <- stan_model(model_code = stan_model1_cens)
+## stan_mod_allcens <- stan_model(model_code = stan_model1_5)
+## stan_mod_add_no_cens <- stan_model(model_code = stan_model3)
+## stan_mod_add_cens <- stan_model(model_code = stan_model3_cens)
+## stan_mod_add_allcens <- stan_model(model_code = stan_model3_5)
+## within-year undating nested
+## stan_mod_nstd_no_cens <- stan_model(model_code = stan_model4)
+## stan_mod_nstd_cens <- stan_model(model_code = stan_model4_cens)
+## stan_mod_nstd_allcens <- stan_model(model_code = stan_model4_5)
+## year-end updating
+## stan_mod_ann_add <- stan_model(model_code = stan_model5_add) 
+## stan_mod_ann_nstd <- stan_model(model_code = stan_model5_nstd) 
+
+##save(stan_mod_no_cens, stan_mod_cens, stan_mod_allcens, ##stan_mod_add_no_cens,stan_mod_add_cens,stan_mod_add_allcens,stan_mod_nstd_no_cens,stan_mod_nstd_cens,stan_mod_##nstd_allcens,stan_mod_ann_add, stan_mod_ann_nstd, file=paste(saveDIR, "compiledStan.RData", sep="/"))
+## annual updating model with season
+load(paste(saveDIR, "compiledStan.RData", sep="/"))
+niters <- 50000
+nkeep <- 2500
+nthin <- ceiling((niters/2)*nchains/nkeep)
+```
+
+## Annual Data
+Simulating biweekly sampling schedule
+
+```{r}
+## Weekly updating function
+seq_within <- function(data=tempdata, 
+                       priorAdd_R=prior.rv, priorAdd_Sn=priorSn.rv[[1]], 
+                       priorNstd_R=priorYr.rvnstd, priorNstd_Sn=priorSn.rvnstd, 
+                       prior2W_R=priorYr.rv2W, prior2W_Sn=priorSn.rv2W, 
+                       priorNSN=prior.rv){ 
+  ## within-year one-step updating function
+  #### 1. running additive updating
+
+  input.to.stan <- stan.in_seq_add(infile=data, x="Chla", y="part_microcystin",
+                                   n.chains=nchains, priorYr_rv=priorAdd_R,
+                                   priorSn_rv=priorAdd_Sn)
+  if (input.to.stan$cens[1] == 0) {
+    stan_mod <- stan_mod_add_allcens
+  } else if(input.to.stan$cens[2] == 0){
+    stan_mod <- stan_mod_add_no_cens
+  } else {
+    stan_mod <- stan_mod_add_cens
+  }
+  ## additive model
+  print("Now fitting the additive model")
+  fit1 <- sampling(stan_mod,
+         			     data = input.to.stan$data,
+	                 init = input.to.stan$inits,
+                   pars = input.to.stan$para,
+                   iter = niters, thin=nthin, 
+                   chains=input.to.stan$n.chains, 
+	                 control = list(adapt_delta = 0.9, max_treedepth=15))
+  fitcoef1 <-
+    rvsims(as.matrix(as.data.frame(rstan::extract(fit1, permute=T))))
+  prr_yr1 <- list(B0=fitcoef1["beta0"], De=fitcoef1["delta"], Ph=fitcoef1["phi"])
+    ## feeding to input function "priorYr_rv"
+  prr_sn1 <- list(d0=fitcoef1["d0"], dp=fitcoef1["dp"], dd=fitcoef1["dd"])
+  log_lik_1 <- extract_log_lik(fit1, merge_chains = FALSE)
+  r_eff_1 <- relative_eff(exp(log_lik_1))
+  loo_1 <- loo(log_lik_1, r_eff = r_eff_1, cores = 2)
+  
+  #### 2. nested (by month)
+  print("Now fitting the nested (by month) model")
+  input.to.stan <- stan.in_seq_nst(infile=data, x="Chla", y="part_microcystin",
+                                   n.chains=nchains, priorYr_rv=priorNstd_R,
+                                   priorSn_rv=priorNstd_Sn)
+  if (input.to.stan$cens[1] == 0) {
+    stan_mod <- stan_mod_nstd_allcens
+  } else if(input.to.stan$cens[2] == 0){
+    stan_mod <- stan_mod_nstd_no_cens
+  } else {
+    stan_mod <- stan_mod_nstd_cens
+  }
+  fit2 <- sampling(stan_mod,
+         			     data = input.to.stan$data,
+	                 init = input.to.stan$inits,
+                   pars = input.to.stan$para,
+                   iter = niters, thin=nthin, 
+                   chains=input.to.stan$n.chains, 
+	                 control = list(adapt_delta = 0.9, max_treedepth=15))
+  fitcoef2 <-
+    rvsims(as.matrix(as.data.frame(rstan::extract(fit2, permute=T))))
+  prr_yr2 <- list(B0=fitcoef2["beta0"], De=fitcoef2["delta"], Ph=fitcoef2["phi"])
+    ## feeding to input function "priorYr_rv"
+  prr_sn2 <- list(sigmaS0=fitcoef2["sigma_d0"], sigmaSd=fitcoef2["sigma_dd"], sigmaSp=fitcoef2["sigma_dp"])
+
+  log_lik_2 <- extract_log_lik(fit2, merge_chains = FALSE)
+  r_eff_2 <- relative_eff(exp(log_lik_2))
+  loo_2 <- loo(log_lik_2, r_eff = r_eff_2, cores = 2)
+  
+  #### 3. nested (biweekly)
+  print("Now fitting the nested (2w) model")
+  input.to.stan <- stan.in_seq_nst(infile=data, x="Chla", y="part_microcystin",
+                                   n.chains=nchains, priorYr_rv=prior2W_R,
+                                   priorSn_rv=prior2W_Sn)
+  if (input.to.stan$cens[1] == 0) {
+    stan_mod <- stan_mod_nstd_allcens
+  } else if(input.to.stan$cens[2] == 0){
+    stan_mod <- stan_mod_nstd_no_cens
+  } else {
+    stan_mod <- stan_mod_nstd_cens
+  }
+  fit3 <- sampling(stan_mod,
+         			     data = input.to.stan$data,
+	                 init = input.to.stan$inits,
+                   pars = input.to.stan$para,
+                   iter = niters, thin=nthin, 
+                   chains=input.to.stan$n.chains, 
+	                 control = list(adapt_delta = 0.9, max_treedepth=15))
+  fitcoef3 <-
+    rvsims(as.matrix(as.data.frame(rstan::extract(fit3, permute=T))))
+  prr_yr3 <- list(B0=fitcoef3["beta0"], De=fitcoef3["delta"], Ph=fitcoef3["phi"],
+                  sigmaR0=fitcoef3["sigma_d0"], sigmaRd=fitcoef3["sigma_dd"], 
+                  sigmaRp=fitcoef3["sigma_dp"])
+    ## feeding to input function "priorYr_rv"
+  prr_sn3 <- list(sigmaS0=fitcoef3["sigma_d0"], sigmaSd=fitcoef3["sigma_dd"], sigmaSp=fitcoef3["sigma_dp"])
+  log_lik_3 <- extract_log_lik(fit3, merge_chains = FALSE)
+  r_eff_3 <- relative_eff(exp(log_lik_3))
+  loo_3 <- loo(log_lik_3, r_eff = r_eff_3, cores = 2)
+  
+  #### 4. no season
+  print("Now fitting the no-season model")
+  input.to.stan <- stan.in_seq_nsn(infile=data, x="Chla", y="part_microcystin",
+                                   n.chains=nchains, priorYr_rv=priorNSN)
+  if (input.to.stan$cens[1] == 0) {
+    stan_mod <- stan_mod_allcens
+  } else if(input.to.stan$cens[2] == 0){
+    stan_mod <- stan_mod_no_cens
+  } else {
+    stan_mod <- stan_mod_cens
+  }
+  fit4 <- sampling(stan_mod,
+         			     data = input.to.stan$data,
+	                 init = input.to.stan$inits,
+                   pars = input.to.stan$para,
+                   iter = niters, thin=nthin, 
+                   chains=input.to.stan$n.chains, 
+                   control = list(adapt_delta = 0.9, max_treedepth=15))
+  fitcoef4 <-
+    rvsims(as.matrix(as.data.frame(rstan::extract(fit4, permute=T))))
+  prr_yr4 <- list(B0=fitcoef4["mu0"], De=fitcoef4["muD"], Ph=fitcoef4["muP"], 
+                  sigma0=fitcoef4["sigma0"], sigmad=fitcoef4["sigmad"], 
+                  sigmap=fitcoef4["sigmap"])
+    ## feeding to input function "priorYr_rv"
+  log_lik_4 <- extract_log_lik(fit4, merge_chains = FALSE)
+  r_eff_4 <- relative_eff(exp(log_lik_4))
+  loo_4 <- loo(log_lik_4, r_eff = r_eff_4, cores = 2)
+  lpd_point <- cbind(
+    loo_1$pointwise[,"elpd_loo"], ## additive
+    loo_2$pointwise[,"elpd_loo"], ## nested monthly
+    loo_3$pointwise[,"elpd_loo"], ## nested biweekly
+    loo_4$pointwise[,"elpd_loo"]  ## no season
+  )
+  return(list(fits=list(fit1, fit2, fit3, fit4), 
+              wts = list(pbma_wts=pseudobma_weights(lpd_point, BB=FALSE), 
+                         pbma_BB_wts=pseudobma_weights(lpd_point),  # default is BB=TRUE
+                         stacking_wts=stacking_weights(lpd_point)), 
+              priors=list(add_yr=prr_yr1, add_sn=prr_sn1, 
+                          nstd_yr=prr_yr2, nstd_sn=prr_sn2, 
+                          n2w_yr=prr_yr3, n2w_sn=prr_sn3, 
+                          nsn_yr=prr_yr4)))
+}
+
+```
+
+## Sequential updating within a year
+
+Each year's data file is grouped by sampling period and month. Posteriors of the previous period are used to derive priors for the next period.
+
+### Function 
+```{R}
+## using the function `seq_within()`
+
+seq_within_allY <- function(data=tmpdata, add_yr0=priorYr.add, add_sn0=priorSn.add,
+                            nstd_yr0=priorYr.nstd, nstd_sn0=priorSn.nstd, 
+                            n2w_yr0=priorYr.2W, n2w_sn0 = priorSn.2W, 
+                            nsn_yr0=priors.nsn){
+wks <- as.numeric(ordered(data$BiWeek))
+wksL <- as.numeric(levels(ordered(data$BiWeek)))
+add_yr=add_yr0
+add_sn=add_sn0
+nstd_yr=nstd_yr0
+nstd_sn=nstd_sn0=priorSn.nstd
+n2w_yr=n2w_yr0=priorYr.2W
+n2w_sn=n2w_sn0 
+nsn_yr=nsn_yr0
+seq_out <- list()
+for (i in 1:max(wks)){
+  print(paste("Iteration ", i, "of ", max(wks)))
+  tempdata <- data[data$BiWeek==wksL[i], ] 
+  mns <- tempdata$Mon_ord[i]
+  if (i == 1){
+    add_sn <- add_sn0[[mns]]
+  } else if (mns != tempdata$Mon_ord[i-1])
+    add_sn <- add_sn0[[mns]]
+## data for each within-year updating
+## one updating step: (1) processing priors and input data for 4 models
+## one-time within-year updating
+seq_out[[i]]<-seq_within(data=tempdata, priorAdd_R=add_yr, priorAdd_Sn=add_sn, 
+                         priorNstd_R=nstd_yr, priorNstd_Sn=nstd_sn, 
+                         prior2W_R=n2w_yr, prior2W_Sn=n2w_sn, priorNSN=nsn_yr)
+add_yr$B0 <- seq_out[[i]]$priors$add_yr$B0
+add_yr$De <- seq_out[[i]]$priors$add_yr$De
+add_yr$Ph <- seq_out[[i]]$priors$add_yr$Ph
+add_sn <- seq_out[[i]]$priors$add_sn
+nstd_yr$B0 <- seq_out[[i]]$priors$nstd_yr$B0
+nstd_yr$De <- seq_out[[i]]$priors$nstd_yr$De
+nstd_yr$Ph <- seq_out[[i]]$priors$nstd_yr$Ph
+nstd_sn <- seq_out[[i]]$priors$nstd_sn
+n2w_yr$B0 <- seq_out[[i]]$priors$n2w_yr$B0
+n2w_yr$De <- seq_out[[i]]$priors$n2w_yr$De
+n2w_yr$Ph <- seq_out[[i]]$priors$n2w_yr$Ph
+n2w_sn <- seq_out[[i]]$priors$n2w_sn
+nsn_yr <- seq_out[[i]]$priors$nsn_yr
+}
+return(list(fitted=seq_out, priors=list(addYr=add_yr, addSn=add_sn, nstdYr=nstd_yr, 
+                                        nstdSn = nstd_sn, n2wYr=n2w_yr, n2wSn=n2w_sn)))
+}
+
+```
+
+## Sequential Updating
+For each year, we break the data into updating groups and update the model once each sampling event concluded.
+
+Starting from the end of year 2018
+```{r}
+## extracting priors for 2019
+## Function to derive prior distribution parameters from a Stan BHM out file.
+load(paste(saveDIR, "MC_ChlaCens.RData", sep="/")) ## starting from 2019 with seasonal terms
+load(paste(saveDIR, "MC_ChlaCens_2019.RData", sep="/")) ## without seasonal terms
+print(fit2keep_full_2019$fit)  ## without season
+print(fit2keep_full_add$fit)   ## additive
+print(fit2keep_full_nstd$fit)  ## nested month
+print(fit2keep_full_2W$fit)    ## nested biweekly
+
+stanfit_full_2019 <- rstan::extract(fit2keep_full_2019$fit)
+stanfit_full_add <- rstan::extract(fit2keep_full_add$fit)
+stanfit_full_nstd <- rstan::extract(fit2keep_full_nstd$fit)
+stanfit_full_2W <- rstan::extract(fit2keep_full_2W$fit)
+
+## extracting priors
+#### without seasons
+prrs_nsn <- rvsims(as.matrix(as.data.frame(stanfit_full_2019))) 
+priors.nsn <- list(B0=prrs_nsn["B0"], De=prrs_nsn["De"], Ph=prrs_nsn["Ph"], 
+                   sigma0=prrs_nsn["sigma0"], sigmad=prrs_nsn["sigmad"], 
+                   sigmap=prrs_nsn["sigmap"])
+## prior parameters needed: m0;mD;mP;lmbd0;lmbdD;lmbdP;al0;alP;alD;bt0;btP;btD;
+## all for N-IG prior
+
+#### additive model
+prrs_add <- rvsims(as.matrix(as.data.frame(stanfit_full_add))) 
+## feeding to input function "priorYr_rv"
+priorYr.add <- list(B0=prrs_add["B0"], De=prrs_add["De"], Ph=prrs_add["Ph"], 
+                    sigmaR0=prrs_add["sigmaR0"], sigmaRd=prrs_add["sigmaRd"], 
+                    sigmaRp=prrs_add["sigmaRp"], 
+                    sigmaS0=prrs_add["sigmaS0"], sigmaSd=prrs_add["sigmaSd"], 
+                    sigmaSp=prrs_add["sigmaSp"])
+## sigmaRs needed for annual updating, but not for within a year
+
+## feeding to input function "priorSn_rv", not needed for year-end updating
+priorSn.add <- list(list(d0=prrs_add["delB0S.1"], dp=prrs_add["delPhS.1"], dd=prrs_add["delDS.1"]),
+                    list(d0=prrs_add["delB0S.2"], dp=prrs_add["delPhS.2"], dd=prrs_add["delDS.2"]),
+                    list(d0=prrs_add["delB0S.3"], dp=prrs_add["delPhS.3"], dd=prrs_add["delDS.3"]),
+                    list(d0=prrs_add["delB0S.4"], dp=prrs_add["delPhS.4"], dd=prrs_add["delDS.4"]),
+                    list(d0=prrs_add["delB0S.5"], dp=prrs_add["delPhS.5"], dd=prrs_add["delDS.5"]),
+                    list(d0=prrs_add["delB0S.6"], dp=prrs_add["delPhS.6"], dd=prrs_add["delDS.6"]))
+### !: ".1",".2"... for extracted stan object. "delBOS[1]" without extract
+
+priorSn.add2019 <- priorSn.add ## save for model evaluation
+
+#### nested version (monthly)
+prrs_nstd <- rvsims(as.matrix(as.data.frame(stanfit_full_nstd))) 
+priorYr.nstd <- list(B0=prrs_nstd["B0"], De=prrs_nstd["De"], Ph=prrs_nstd["Ph"], 
+                    sigmaR0=prrs_nstd["sigmaR0"], sigmaRd=prrs_nstd["sigmaRd"], 
+                    sigmaRp=prrs_nstd["sigmaRp"])
+priorSn.nstd <- list(sigmaS0=prrs_nstd["sigmaS0"], sigmaSd=prrs_nstd["sigmaSd"], 
+                     sigmaSp=prrs_nstd["sigmaSp"])
+## nested -2 week interval
+prrs_2W <- rvsims(as.matrix(as.data.frame(stanfit_full_2W))) 
+priorYr.2W <- list(B0=prrs_2W["B0"], De=prrs_2W["De"], Ph=prrs_2W["Ph"], 
+                   sigmaR0=prrs_2W["sigmaR0"], sigmaRd=prrs_2W["sigmaRd"], 
+                   sigmaRp=prrs_2W["sigmaRp"])
+priorSn.2W <- list(sigmaS0=prrs_2W["sigmaS0"], sigmaSd=prrs_2W["sigmaSd"], 
+                   sigmaSp=prrs_2W["sigmaSp"])
+```
+## Annual updating
+
+Now running sequential updating within a year (2019):
+```{R}
+## 2019
+## processing data
+load(paste(saveDIR, "eriedata2019.RData", sep="/"))
+
+temp<-(!is.na(eriedata2019$part_microcystin))&(!is.na(eriedata2019$Chla))&(eriedata2019$Chla>0)& 
+  (eriedata2019$part_microcystin>0)&(eriedata2019$Month>=5 & eriedata2019$Month<=10)
+tmpdata <- eriedata2019[temp,]
+tmpdata$Mon_ord <- as.numeric(ordered(tmpdata$Month, levels=5:10))
+tmpdata$Yr_ord <- as.numeric(ordered(tmpdata$Year))
+tmpdata$sn_nstd <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$Month, sep=":")))
+## for biweek season
+tmpdata$sn_nstd2w <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$BiWeek, sep=":")))
+
+seq_2019 <- seq_within_allY ()
+save("seq_2019", file=paste(saveDIR, "seq2019.RData", sep="/"))
+## load(paste(saveDIR, "seq2019.RData", sep="/"))
+```
+
+At the end of the year, updating the BHM using data from the entire year.
+
+```{R}
+## running annual sequential updating
+### extracting prior parameters first from the full model up to 2018
+### these are the same priors used in the previous code chunk
+### 1. Additive model
+prrs_add <- rvsims(as.matrix(as.data.frame(stanfit_full_add))) 
+## feeding to input function "priorYr_rv"
+priorYr.add <- list(B0=prrs_add["B0"], De=prrs_add["De"], Ph=prrs_add["Ph"], 
+                   sigmaR0=prrs_add["sigmaR0"], sigmaRd=prrs_add["sigmaRd"], 
+                   sigmaRp=prrs_add["sigmaRp"], 
+                   sigmaS0=prrs_add["sigmaS0"], sigmaSd=prrs_add["sigmaRd"], 
+                   sigmaSp=prrs_add["sigmaSp"])
+priorSn.add <- list(list(d0=prrs_add["delB0S.1"], dp=prrs_add["delPhS.1"], dd=prrs_add["delDS.1"]),
+                    list(d0=prrs_add["delB0S.2"], dp=prrs_add["delPhS.2"], dd=prrs_add["delDS.2"]),
+                    list(d0=prrs_add["delB0S.3"], dp=prrs_add["delPhS.3"], dd=prrs_add["delDS.3"]),
+                    list(d0=prrs_add["delB0S.4"], dp=prrs_add["delPhS.4"], dd=prrs_add["delDS.4"]),
+                    list(d0=prrs_add["delB0S.5"], dp=prrs_add["delPhS.5"], dd=prrs_add["delDS.5"]),
+                    list(d0=prrs_add["delB0S.6"], dp=prrs_add["delPhS.6"], dd=prrs_add["delDS.6"]))
+
+### 2. nested
+prrs_nstd <- rvsims(as.matrix(as.data.frame(stanfit_full_nstd))) 
+## feeding to input function "priorYr_rv"
+priorYr.nstd <- list(B0=prrs_nstd["B0"], De=prrs_nstd["De"], Ph=prrs_nstd["Ph"], 
+                     sigmaR0=prrs_nstd["sigmaR0"], sigmaRd=prrs_nstd["sigmaRd"], 
+                     sigmaRp=prrs_nstd["sigmaRp"])
+priorSn.nstd <- list(sigmaS0=prrs_add["sigmaS0"], sigmaSd=prrs_add["sigmaSd"], 
+                     sigmaSp=prrs_add["sigmaSp"])
+
+### 3. Biweekly
+prrs_2w <- rvsims(as.matrix(as.data.frame(stanfit_full_2W))) 
+## feeding to input function "priorYr_rv"
+priorYr.2w <- list(B0=prrs_2w["B0"], De=prrs_2w["De"], Ph=prrs_2w["Ph"], 
+                   sigmaR0=prrs_2w["sigmaR0"], sigmaRd=prrs_2w["sigmaRd"], 
+                   sigmaRp=prrs_2w["sigmaRp"]) 
+priorYr.2w <- list(sigmaS0=prrs_2w["sigmaS0"], sigmaSd=prrs_2w["sigmaSd"], 
+                   sigmaSp=prrs_2w["sigmaSp"])
+## sigmaRs needed for annual updating, but not for within a year
+
+### 4. No season using `stan_mod_cens` (line 97)
+prrs_nsn <- rvsims(as.matrix(as.data.frame(stanfit_full_2019))) 
+priors.nsn <- list(B0=prrs_nsn["B0"], De=prrs_nsn["De"], Ph=prrs_nsn["Ph"], 
+                   sigma0=prrs_nsn["sigma0"], sigmad=prrs_nsn["sigmad"], 
+                   sigmap=prrs_nsn["sigmap"])
+## prior parameters needed: m0;mD;mP;lmbd0;lmbdD;lmbdP;al0;alP;alD;bt0;btP;btD;
+## all for N-IG prior
+
+## 2019 year end
+## processing data
+tmpdata <- eriedata2019
+temp<-(!is.na(tmpdata$part_microcystin))&(!is.na(tmpdata$Chla))&(tmpdata$Chla>0)& 
+  (tmpdata$part_microcystin>0)&(tmpdata$Month>=5 & tmpdata$Month<=10)
+tmpdata <- eriedata2019[temp,]
+tmpdata$Mon_ord <- as.numeric(ordered(tmpdata$Month, levels=5:10))
+tmpdata$Yr_ord <- as.numeric(ordered(tmpdata$Year))
+tmpdata$sn_nstd <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$Month, sep=":")))
+## for biweek season
+tmpdata$sn_nstd2w <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$BiWeek, sep=":")))
+
+## no seasons
+input.to.stan <- stan.in_seq_nsn(infile=tmpdata, priorYr_rv = priors.nsn)
+fitNSN2019 <- sampling(stan_mod_cens,
+         			     data = input.to.stan$data,
+	                 init = input.to.stan$inits,
+                   pars = input.to.stan$para,
+                   iter = niters, thin=nthin, 
+                   chains=input.to.stan$n.chains) #, 
+##                   control = list(adapt_delta = 0.9, max_treedepth=15))
+## additive
+input.to.stan <- stan.in_seqA_add(infile=tmpdata, x="Chla", y="part_microcystin",
+                              n.chains=nchains, priorYr_rv=priorYr.add, 
+                              priorSn_rv=priorSn.add)
+
+fit2keep_2019_add <- sampling(stan_mod_ann_add, 
+                              data = input.to.stan$data,
+                              init=input.to.stan$inits,
+                              pars = input.to.stan$para,
+                              iter=niters, thin=nthin,
+                              chains=input.to.stan$n.chains)
+
+print(fit2keep_2019_add)
+plot(fit2keep_2019_add)
+
+## nested (month)
+input.to.stan <- stan.in_seqA_nstd(infile=tmpdata, x="Chla", y="part_microcystin",
+                              n.chains=nchains, priorYr_rv=priorYr.nstd, priorSn_rv=priorSn.nstd,biweek=F)
+
+fit2keep_ann_2019N <- sampling(stan_mod_ann_nstd, 
+                               data = input.to.stan$data,
+                               init=input.to.stan$inits,  
+                               pars = input.to.stan$para,
+                               iter=niters, thin=nthin,
+                               chains=input.to.stan$n.chains)#)
+
+print(fit2keep_ann_2019N)
+plot(fit2keep_ann_2019N)
+## 2w
+input.to.stan <- stan.in_seqA_nstd(infile=tmpdata, x="Chla", y="part_microcystin",
+                                   n.chains=nchains, priorYr_rv=priorYr.nstd, 
+                                   priorSn_rv=priorSn.nstd, biweek=T)
+
+fit2keep_ann_2019W <- sampling(stan_mod_ann_nstd,  data = input.to.stan$data,
+                               init=input.to.stan$inits,
+                               pars = input.to.stan$para,
+                               iter=niters, thin=nthin,
+                               chains=input.to.stan$n.chains)#)
+
+print(fit2keep_ann_2019W)
+plot(fit2keep_ann_2019W)
+
+save("fitNSN2019", "fit2keep_2019_add", "fit2keep_ann_2019N", "fit2keep_ann_2019W", 
+     file=paste(saveDIR, "annual2019.RData", sep="/"))
+## load(paste(saveDIR, "annual2019.RData", sep="/"))
+```
+
+Now running sequential updating within a year (2020):
+```{R}
+## 2020
+## extracting priors
+## updating priors for 2020:
+### 1. Additive model
+prrs_add <- rvsims(as.matrix(as.data.frame(rstan::extract(fit2keep_2019_add))))
+## feeding to input function "priorYr_rv"
+priorYr.add <- list(B0=prrs_add["B0"], De=prrs_add["De"], Ph=prrs_add["Ph"], 
+                    sigmaR0=prrs_add["sigmaR0"], sigmaRd=prrs_add["sigmaRd"], 
+                    sigmaRp=prrs_add["sigmaRp"], 
+                    sigmaS0=prrs_add["sigmaS0"], sigmaSd=prrs_add["sigmaSd"], 
+                    sigmaSp=prrs_add["sigmaSp"])
+
+priorSn.add <- 
+  list(list(d0=prrs_add["delB0S.1"], dp=prrs_add["delPhS.1"], dd=prrs_add["delDS.1"]),
+       list(d0=prrs_add["delB0S.2"], dp=prrs_add["delPhS.2"], dd=prrs_add["delDS.2"]),
+       list(d0=prrs_add["delB0S.3"], dp=prrs_add["delPhS.3"], dd=prrs_add["delDS.3"]),
+       list(d0=prrs_add["delB0S.4"], dp=prrs_add["delPhS.4"], dd=prrs_add["delDS.4"]),
+       list(d0=prrs_add["delB0S.5"], dp=prrs_add["delPhS.5"], dd=prrs_add["delDS.5"]),
+       list(d0=prrs_add["delB0S.6"], dp=prrs_add["delPhS.6"], dd=prrs_add["delDS.6"]))
+
+priorSn.add2020 <- priorSn.add ## save for model evaluation
+
+### 2. nested
+prrs_nstd <- rvsims(as.matrix(as.data.frame(rstan::extract(fit2keep_ann_2019N))))
+## feeding to input function "priorYr_rv"
+priorYr.nstd <- list(B0=prrs_nstd["B0"], De=prrs_nstd["De"], Ph=prrs_nstd["Ph"], 
+                     sigmaR0=prrs_nstd["sigmaR0"], sigmaRd=prrs_nstd["sigmaRd"], 
+                     sigmaRp=prrs_nstd["sigmaRp"])
+priorSn.nstd <- list(sigmaS0=prrs_add["sigmaS0"], sigmaSd=prrs_add["sigmaSd"], 
+                     sigmaSp=prrs_add["sigmaSp"])
+
+### 3. Biweekly
+prrs_2w <- rvsims(as.matrix(as.data.frame(rstan::extract(fit2keep_ann_2019W))))
+## feeding to input function "priorYr_rv"
+priorYr.2w <- list(B0=prrs_2w["B0"], De=prrs_2w["De"], Ph=prrs_2w["Ph"], 
+                   sigmaR0=prrs_2w["sigmaR0"], sigmaRd=prrs_2w["sigmaRd"], 
+                   sigmaRp=prrs_2w["sigmaRp"]) 
+priorYr.2w <- list(sigmaS0=prrs_2w["sigmaS0"], sigmaSd=prrs_2w["sigmaSd"], 
+                   sigmaSp=prrs_2w["sigmaSp"])
+## sigmaRs needed for annual updating, but not for within a year
+
+## 4. No seasons
+prrs_nsn <- rvsims(as.matrix(as.data.frame(rstan::extract(fitNSN2019, permute=T))))
+priors.nsn <- list(B0=prrs_nsn["mu0"], De=prrs_nsn["muD"], Ph=prrs_nsn["muP"], 
+                   sigma0=prrs_nsn["sigma0"], sigmad=prrs_nsn["sigmad"], 
+                   sigmap=prrs_nsn["sigmap"])
+
+## processing data
+load(paste(saveDIR, "eriedata2021.RData", sep="/"))
+tmpdata <- eriedata2020
+temp<-(!is.na(tmpdata$part_microcystin))&(!is.na(tmpdata$Chla))&(tmpdata$Chla>0)& 
+  (tmpdata$part_microcystin>0)&(tmpdata$Month>=5 & tmpdata$Month<=10)
+tmpdata <- tmpdata[temp,]
+tmpdata$Mon_ord <- as.numeric(ordered(tmpdata$Month, levels=5:10))
+tmpdata$Yr_ord <- as.numeric(ordered(tmpdata$Year))
+tmpdata$sn_nstd <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$Month, sep=":")))
+## for biweek season
+tmpdata$sn_nstd2w <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$BiWeek, sep=":")))
+
+seq_2020 <- seq_within_allY (data=tmpdata, add_yr0=priorYr.add, add_sn0=priorSn.add,
+                             nstd_yr0=priorYr.nstd, nstd_sn0=priorSn.nstd, 
+                             n2w_yr0=priorYr.2W, n2w_sn0 = priorSn.2W, 
+                             nsn_yr0=priors.nsn)
+save("seq_2020", file=paste(saveDIR, "seq2020.RData", sep="/"))
+## load(paste(saveDIR, "seq2020.RData", sep="/"))
+```
+
+
+Year-end updating (2020)
+```{R}
+## updating priors for 2020:
+### 1. Additive model
+prrs_add <- rvsims(as.matrix(as.data.frame(rstan::extract(fit2keep_2019_add))))
+## feeding to input function "priorYr_rv"
+priorYr.add <- list(B0=prrs_add["B0"], De=prrs_add["De"], Ph=prrs_add["Ph"], 
+                    sigmaR0=prrs_add["sigmaR0"], sigmaRd=prrs_add["sigmaRd"], 
+                    sigmaRp=prrs_add["sigmaRp"], 
+                    sigmaS0=prrs_add["sigmaS0"], sigmaSd=prrs_add["sigmaSd"], 
+                    sigmaSp=prrs_add["sigmaSp"])
+
+priorSn.add <- 
+  list(list(d0=prrs_add["delB0S.1"], dp=prrs_add["delPhS.1"], dd=prrs_add["delDS.1"]),
+       list(d0=prrs_add["delB0S.2"], dp=prrs_add["delPhS.2"], dd=prrs_add["delDS.2"]),
+       list(d0=prrs_add["delB0S.3"], dp=prrs_add["delPhS.3"], dd=prrs_add["delDS.3"]),
+       list(d0=prrs_add["delB0S.4"], dp=prrs_add["delPhS.4"], dd=prrs_add["delDS.4"]),
+       list(d0=prrs_add["delB0S.5"], dp=prrs_add["delPhS.5"], dd=prrs_add["delDS.5"]),
+       list(d0=prrs_add["delB0S.6"], dp=prrs_add["delPhS.6"], dd=prrs_add["delDS.6"]))
+
+
+### 2. nested
+prrs_nstd <- rvsims(as.matrix(as.data.frame(fit2keep_ann_2019N))) 
+## feeding to input function "priorYr_rv"
+priorYr.nstd <- list(B0=prrs_nstd["B0"], De=prrs_nstd["De"], Ph=prrs_nstd["Ph"], 
+                     sigmaR0=prrs_nstd["sigmaR0"], sigmaRd=prrs_nstd["sigmaRd"], 
+                     sigmaRp=prrs_nstd["sigmaRp"])
+priorSn.nstd <- list(sigmaS0=prrs_add["sigmaS0"], sigmaSd=prrs_add["sigmaSd"], 
+                     sigmaSp=prrs_add["sigmaSp"])
+
+### 3. Biweekly
+prrs_2w <- rvsims(as.matrix(as.data.frame(fit2keep_ann_2019W))) 
+## feeding to input function "priorYr_rv"
+priorYr.2w <- list(B0=prrs_2w["B0"], De=prrs_2w["De"], Ph=prrs_2w["Ph"], 
+                   sigmaR0=prrs_2w["sigmaR0"], sigmaRd=prrs_2w["sigmaRd"], 
+                   sigmaRp=prrs_2w["sigmaRp"]) 
+priorYr.2w <- list(sigmaS0=prrs_2w["sigmaS0"], sigmaSd=prrs_2w["sigmaSd"], 
+                   sigmaSp=prrs_2w["sigmaSp"])
+## sigmaRs needed for annual updating, but not for within a year
+
+### 4. No season using `stan_mod_cens` (line 97)
+prrs_nsn <- rvsims(as.matrix(as.data.frame(rstan::extract(fitNSN2019, permute=T))))
+priors.nsn <- list(B0=prrs_nsn["mu0"], De=prrs_nsn["muD"], Ph=prrs_nsn["muP"], 
+                   sigma0=prrs_nsn["sigma0"], sigmad=prrs_nsn["sigmad"], 
+                   sigmap=prrs_nsn["sigmap"])
+
+## 2020 year end updating
+
+tmpdata <- eriedata2020
+temp<-(!is.na(tmpdata$part_microcystin))&(!is.na(tmpdata$Chla))&(tmpdata$Chla>0)& 
+  (tmpdata$part_microcystin>0)&(tmpdata$Month>=5 & tmpdata$Month<=10)
+tmpdata <- tmpdata[temp,]
+tmpdata$Mon_ord <- as.numeric(ordered(tmpdata$Month, levels=5:10))
+tmpdata$Yr_ord <- as.numeric(ordered(tmpdata$Year))
+tmpdata$sn_nstd <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$Month, sep=":")))
+## for biweek season
+tmpdata$sn_nstd2w <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$BiWeek, sep=":")))
+
+## no seasons
+input.to.stan <- stan.in_seq_nsn(infile=tmpdata, priorYr_rv = priors.nsn)
+fitNSN2020 <- sampling(stan_mod_cens,
+            			     data = input.to.stan$data,
+	                     init = input.to.stan$inits,
+                       pars = input.to.stan$para,
+                       iter = niters, thin=nthin, 
+                       chains=input.to.stan$n.chains) #, 
+##                   control = list(adapt_delta = 0.9, max_treedepth=15))
+## additive
+input.to.stan <- stan.in_seqA_add(infile=tmpdata, x="Chla", y="part_microcystin",
+                              n.chains=nchains, priorYr_rv=priorYr.add, 
+                              priorSn_rv=priorSn.add)
+
+fit2keep_2020_add <- sampling(stan_mod_ann_add, 
+                              data = input.to.stan$data,
+                              init=input.to.stan$inits,
+                              pars = input.to.stan$para,
+                              iter=niters, thin=nthin,
+                              chains=input.to.stan$n.chains)
+
+print(fit2keep_2020_add)
+plot(fit2keep_2020_add)
+
+## nested (month)
+input.to.stan <- stan.in_seqA_nstd(infile=tmpdata, x="Chla", y="part_microcystin",
+                              n.chains=nchains, priorYr_rv=priorYr.nstd, priorSn_rv=priorSn.nstd,biweek=F)
+
+fit2keep_ann_2020N <- sampling(stan_mod_ann_nstd, 
+                               data = input.to.stan$data,
+                               init=input.to.stan$inits,  
+                               pars = input.to.stan$para,
+                               iter=niters, thin=nthin,
+                               chains=input.to.stan$n.chains)#)
+
+print(fit2keep_ann_2020N)
+plot(fit2keep_ann_2020N)
+## 2w
+input.to.stan <- stan.in_seqA_nstd(infile=tmpdata, x="Chla", y="part_microcystin",
+                              n.chains=nchains, priorYr_rv=priorYr.nstd, 
+                              priorSn_rv=priorSn.nstd,biweek=T)
+
+fit2keep_ann_2020W <- sampling(stan_mod_ann_nstd,  data = input.to.stan$data,
+                               init=input.to.stan$inits,
+                               pars = input.to.stan$para,
+                               iter=niters, thin=nthin,
+                               chains=input.to.stan$n.chains)#)
+
+print(fit2keep_ann_2020W)
+plot(fit2keep_ann_2020W)
+
+save("fitNSN2020", "fit2keep_2020_add", "fit2keep_ann_2020N", "fit2keep_ann_2020W", 
+     file=paste(saveDIR, "annual2020.RData", sep="/"))
+## load(paste(saveDIR, "annual2020.RData", sep="/"))
+```
+
+Now running sequential updating within a year (2021):
+
+```{R}
+
+## updating priors for 2021: Extracting priors
+
+### 1. Additive model
+prrs_add <- rvsims(as.matrix(as.data.frame(rstan::extract(fit2keep_2020_add))))
+## feeding to input function "priorYr_rv"
+priorYr.add <- list(B0=prrs_add["B0"], De=prrs_add["De"], Ph=prrs_add["Ph"], 
+                   sigmaR0=prrs_add["sigmaR0"], sigmaRd=prrs_add["sigmaRd"], 
+                   sigmaRp=prrs_add["sigmaRp"], 
+                   sigmaS0=prrs_add["sigmaS0"], sigmaSd=prrs_add["sigmaRd"], 
+                   sigmaSp=prrs_add["sigmaSp"])
+priorSn.add <- list(list(d0=prrs_add["delB0S.1"], dp=prrs_add["delPhS.1"], dd=prrs_add["delDS.1"]),
+                    list(d0=prrs_add["delB0S.2"], dp=prrs_add["delPhS.2"], dd=prrs_add["delDS.2"]),
+                    list(d0=prrs_add["delB0S.3"], dp=prrs_add["delPhS.3"], dd=prrs_add["delDS.3"]),
+                    list(d0=prrs_add["delB0S.4"], dp=prrs_add["delPhS.4"], dd=prrs_add["delDS.4"]),
+                    list(d0=prrs_add["delB0S.5"], dp=prrs_add["delPhS.5"], dd=prrs_add["delDS.5"]),
+                    list(d0=prrs_add["delB0S.6"], dp=prrs_add["delPhS.6"], dd=prrs_add["delDS.6"]))
+
+priorSn.add2021 <- priorSn.add ## save for model evaluation
+
+### 2. nested
+prrs_nstd <- rvsims(as.matrix(as.data.frame(rstan::extract(fit2keep_ann_2020N)))) 
+## feeding to input function "priorYr_rv"
+priorYr.nstd <- list(B0=prrs_nstd["B0"], De=prrs_nstd["De"], Ph=prrs_nstd["Ph"], 
+                     sigmaR0=prrs_nstd["sigmaR0"], sigmaRd=prrs_nstd["sigmaRd"], 
+                     sigmaRp=prrs_nstd["sigmaRp"])
+priorSn.nstd <- list(sigmaS0=prrs_add["sigmaS0"], sigmaSd=prrs_add["sigmaSd"], 
+                     sigmaSp=prrs_add["sigmaSp"])
+
+### 3. Biweekly
+prrs_2w <- rvsims(as.matrix(as.data.frame(rstan::extract(fit2keep_ann_2020W))))
+## feeding to input function "priorYr_rv"
+priorYr.2w <- list(B0=prrs_2w["B0"], De=prrs_2w["De"], Ph=prrs_2w["Ph"], 
+                   sigmaR0=prrs_2w["sigmaR0"], sigmaRd=prrs_2w["sigmaRd"], 
+                   sigmaRp=prrs_2w["sigmaRp"]) 
+priorYr.2w <- list(sigmaS0=prrs_2w["sigmaS0"], sigmaSd=prrs_2w["sigmaSd"], 
+                   sigmaSp=prrs_2w["sigmaSp"])
+
+### 4. No season using `stan_mod_cens` (line 97)
+prrs_nsn <- rvsims(as.matrix(as.data.frame(rstan::extract(fitNSN2020))))
+priors.nsn <- list(B0=prrs_nsn["mu0"], De=prrs_nsn["muD"], Ph=prrs_nsn["muP"], 
+                   sigma0=prrs_nsn["sigma0"], sigmad=prrs_nsn["sigmad"], 
+                   sigmap=prrs_nsn["sigmap"])
+## 2021
+## processing data
+tmpdata <- eriedata2021
+temp<-(!is.na(tmpdata$part_microcystin))&(!is.na(tmpdata$Chla))&(tmpdata$Chla>0)& 
+  (tmpdata$part_microcystin>0)&(tmpdata$Month>=5 & tmpdata$Month<=10)
+tmpdata <- tmpdata[temp,]
+tmpdata$Mon_ord <- as.numeric(ordered(tmpdata$Month, levels=5:10))
+tmpdata$Yr_ord <- as.numeric(ordered(tmpdata$Year))
+tmpdata$sn_nstd <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$Month, sep=":")))
+## for biweek season
+tmpdata$sn_nstd2w <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$BiWeek, sep=":")))
+
+seq_2021 <- seq_within_allY (data=tmpdata, add_yr0=priorYr.add, add_sn0=priorSn.add,
+                             nstd_yr0=priorYr.nstd, nstd_sn0=priorSn.nstd, 
+                             n2w_yr0=priorYr.2W, n2w_sn0 = priorSn.2W, 
+                             nsn_yr0=priors.nsn)
+save("seq_2021", file=paste(saveDIR, "seq2021.RData", sep="/"))
+## load(paste(saveDIR, "seq2021.RData", sep="/"))
+```
+
+Year-end updating (2021)
+```{R}
+## updating priors for 2021:
+### 1. Additive model
+### 1. Additive model
+prrs_add <- rvsims(as.matrix(as.data.frame(rstan::extract(fit2keep_2020_add))))
+## feeding to input function "priorYr_rv"
+priorYr.add <- list(B0=prrs_add["B0"], De=prrs_add["De"], Ph=prrs_add["Ph"], 
+                   sigmaR0=prrs_add["sigmaR0"], sigmaRd=prrs_add["sigmaRd"], 
+                   sigmaRp=prrs_add["sigmaRp"], 
+                   sigmaS0=prrs_add["sigmaS0"], sigmaSd=prrs_add["sigmaRd"], 
+                   sigmaSp=prrs_add["sigmaSp"])
+priorSn.add <- list(list(d0=prrs_add["delB0S.1"], dp=prrs_add["delPhS.1"], dd=prrs_add["delDS.1"]),
+                    list(d0=prrs_add["delB0S.2"], dp=prrs_add["delPhS.2"], dd=prrs_add["delDS.2"]),
+                    list(d0=prrs_add["delB0S.3"], dp=prrs_add["delPhS.3"], dd=prrs_add["delDS.3"]),
+                    list(d0=prrs_add["delB0S.4"], dp=prrs_add["delPhS.4"], dd=prrs_add["delDS.4"]),
+                    list(d0=prrs_add["delB0S.5"], dp=prrs_add["delPhS.5"], dd=prrs_add["delDS.5"]),
+                    list(d0=prrs_add["delB0S.6"], dp=prrs_add["delPhS.6"], dd=prrs_add["delDS.6"]))
+
+### 2. nested
+prrs_nstd <- rvsims(as.matrix(as.data.frame(rstan::extract(fit2keep_ann_2020N))))
+## feeding to input function "priorYr_rv"
+priorYr.nstd <- list(B0=prrs_nstd["B0"], De=prrs_nstd["De"], Ph=prrs_nstd["Ph"], 
+                     sigmaR0=prrs_nstd["sigmaR0"], sigmaRd=prrs_nstd["sigmaRd"], 
+                     sigmaRp=prrs_nstd["sigmaRp"])
+priorSn.nstd <- list(sigmaS0=prrs_add["sigmaS0"], sigmaSd=prrs_add["sigmaSd"], 
+                     sigmaSp=prrs_add["sigmaSp"])
+
+### 3. Biweekly
+prrs_2w <- rvsims(as.matrix(as.data.frame(rstan::extract(fit2keep_ann_2020W))))
+## feeding to input function "priorYr_rv"
+priorYr.2w <- list(B0=prrs_2w["B0"], De=prrs_2w["De"], Ph=prrs_2w["Ph"], 
+                   sigmaR0=prrs_2w["sigmaR0"], sigmaRd=prrs_2w["sigmaRd"], 
+                   sigmaRp=prrs_2w["sigmaRp"]) 
+priorYr.2w <- list(sigmaS0=prrs_2w["sigmaS0"], sigmaSd=prrs_2w["sigmaSd"], 
+                   sigmaSp=prrs_2w["sigmaSp"])
+
+### 4. No season using `stan_mod_cens` (line 97)
+prrs_nsn <- rvsims(as.matrix(as.data.frame(rstan::extract(fitNSN2020))))
+priors.nsn <- list(B0=prrs_nsn["mu0"], De=prrs_nsn["muD"], Ph=prrs_nsn["muP"], 
+                   sigma0=prrs_nsn["sigma0"], sigmad=prrs_nsn["sigmad"], 
+                   sigmap=prrs_nsn["sigmap"])
+## 2021 year end updating
+
+tmpdata <- eriedata2021
+temp<-(!is.na(tmpdata$part_microcystin))&(!is.na(tmpdata$Chla))&(tmpdata$Chla>0)& 
+  (tmpdata$part_microcystin>0)&(tmpdata$Month>=5 & tmpdata$Month<=10)
+tmpdata <- tmpdata[temp,]
+tmpdata$Mon_ord <- as.numeric(ordered(tmpdata$Month, levels=5:10))
+tmpdata$Yr_ord <- as.numeric(ordered(tmpdata$Year))
+tmpdata$sn_nstd <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$Month, sep=":")))
+tmpdata$sn_nstd2w <- as.numeric(ordered(paste(tmpdata$Year, tmpdata$BiWeek, sep=":")))
+
+## no seasons
+input.to.stan <- stan.in_seq_nsn(infile=tmpdata, priorYr_rv = priors.nsn)
+fitNSN2021 <- sampling(stan_mod_cens,
+            			     data = input.to.stan$data,
+	                     init = input.to.stan$inits,
+                       pars = input.to.stan$para,
+                       iter = niters, thin=nthin, 
+                       chains=input.to.stan$n.chains) #, 
+##                   control = list(adapt_delta = 0.9, max_treedepth=15))
+## additive
+input.to.stan <- stan.in_seqA_add(infile=tmpdata, x="Chla", y="part_microcystin",
+                              n.chains=nchains, priorYr_rv=priorYr.add, 
+                              priorSn_rv=priorSn.add)
+
+fit2keep_2021_add <- sampling(stan_mod_ann_add, 
+                              data = input.to.stan$data,
+                              init=input.to.stan$inits,
+                              pars = input.to.stan$para,
+                              iter=niters, thin=nthin,
+                              chains=input.to.stan$n.chains)
+
+print(fit2keep_2021_add)
+plot(fit2keep_2021_add)
+
+## nested (month)
+input.to.stan <- stan.in_seqA_nstd(infile=tmpdata, x="Chla", y="part_microcystin",
+                                   n.chains=nchains, priorYr_rv=priorYr.nstd, 
+                                   priorSn_rv=priorSn.nstd,biweek=F)
+
+fit2keep_ann_2021N <- sampling(stan_mod_ann_nstd, 
+                               data = input.to.stan$data,
+                               init=input.to.stan$inits,  
+                               pars = input.to.stan$para,
+                               iter=niters, thin=nthin,
+                               chains=input.to.stan$n.chains)#)
+
+print(fit2keep_ann_2021N)
+plot(fit2keep_ann_2021N)
+## 2w
+input.to.stan <- stan.in_seqA_nstd(infile=tmpdata, x="Chla", y="part_microcystin",
+                              n.chains=nchains, priorYr_rv=priorYr.nstd, priorSn_rv=priorSn.nstd,biweek=T)
+
+fit2keep_ann_2021W <- sampling(stan_mod_ann_nstd,  data = input.to.stan$data,
+                               init=input.to.stan$inits,
+                               pars = input.to.stan$para,
+                               iter=niters, thin=nthin,
+                               chains=input.to.stan$n.chains)#)
+
+print(fit2keep_ann_2021W)
+plot(fit2keep_ann_2021W)
+
+save("fitNSN2021", "fit2keep_2021_add", "fit2keep_ann_2021N", "fit2keep_ann_2021W", 
+     file=paste(saveDIR, "annual2021.RData", sep="/"))
+save("priorSn.add2019", "priorSn.add2020", "priorSn.add2021", file=paste(saveDIR, "prior19_21.RData", sep="/"))
+
+```

@@ -1,0 +1,152 @@
+---
+title: "Lake Erie Microcystin Risk Assessment -- Hierarchical Model"
+author: "Song Qian"
+date: "8/14/2019"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Initial setup
+```{r}
+source("FrontMatter.R")
+load(paste(saveDIR, "eriedataClean.RData", sep="/"))
+
+niters <- 100000
+nkeep <- 2500
+nthin <- ceiling((niters/2)*nchains/nkeep)
+```
+
+## Fitting the Full BHM 
+
+Using data from all years -- an empirical Bayes approach.
+```{r}
+source("BHierM.R") ## model code and input data functions
+
+## compile model
+fit <- stan_model(model_code = stan_model2)
+
+## Full data
+temp <- !is.na(eriedata$part_microcystin) &
+  !is.na(eriedata$Chla) & eriedata$Chla> 0 & 
+  eriedata$part_microcystin > 0 & (eriedata$Month>=5 & eriedata$Month<=10)
+
+fit2keep_full_nstd <- running_fun(Data=eriedata[temp,], Nst=T) ## 4200 seconds
+fit2keep_full_add <- running_fun(Data=eriedata[temp,], Nst=F) ## 20712
+fit2keep_full_2W <- running_fun(Data=eriedata[temp,], Nst=T, ssn="BiWeek") ## 3920
+print(fit2keep_full_add$fit)
+print(fit2keep_full_nstd$fit)
+print(fit2keep_full_2W$fit)
+
+save(fit2keep_full_nstd, fit2keep_full_add, fit2keep_full_2W, file=paste(saveDIR, "MC_ChlaCens.RData", sep="/"))
+## load(paste(saveDIR, "MC_ChlaCens.RData", sep="/"))
+## load(paste(saveDIR, "MC_ChlaCens_2019.RData", sep="/"))
+## stanfit_full <- rstan::extract(fit2keep_full_2019$fit)
+```
+
+## Presenting Model Results
+```{R}
+load(paste(saveDIR, "MC_ChlaCens.RData", sep="/"))
+stanfit_full_add <- rstan::extract(fit2keep_full_add$fit, permuted=T)
+stanfit_full_nstd <- rstan::extract(fit2keep_full_nstd$fit, permuted=T)
+
+temp <- !is.na(eriedata$part_microcystin) &
+  !is.na(eriedata$Chla) & eriedata$Chla> 0 & 
+  eriedata$part_microcystin > 0
+infile <- eriedata[temp,]
+infile$Mon_ord <- as.numeric(ordered(infile$Month))
+infile$Yr_ord <- as.numeric(ordered(infile$Year))
+infile$sn_nstd <- as.numeric(ordered(paste(infile$Year, infile$Month, sep=":")))
+
+
+annual_fig <- function(Yr=2008, data=infile, stanfit=stanfit_full_nstd, Additive=F, 
+                       x="Chla", y="part_microcystin", Xlim=NULL, Ylim=NULL){
+    n_yrs <- max(data$Yr_ord)
+    Yr_odr <- (1:n_yrs)[levels(ordered(data$Year))==Yr]
+    plotdata <- data[data$Year==Yr, ]
+    if (Additive){
+      seasn <- plotdata$Mon_ord
+      n_sn <- max(infile$Mon_ord)
+    } else {
+      seasn <- plotdata$sn_nstd
+      nstd_sns <- sort(unique(seasn))
+      n_sn <- length(unique(seasn))
+    }
+    mnths <- month.abb[unique(plotdata$Month)]
+    mnths <- sort(ordered(mnths, levels=month.abb[sort(unique(plotdata$Month))]))
+    if (is.null(Xlim)) Xlim <- round(range(log(plotdata[, x]))+c(-0.5, 0.5))
+    xplot <- seq(Xlim[1], Xlim[2], ,20)
+    ## mean line
+    bb0 <- summary(rvsims(stanfit$B0+stanfit$delB0R[,Yr_odr]))
+    dde <- summary(rvsims(stanfit$De+stanfit$delDR[,Yr_odr]))
+    pph <- summary(rvsims(stanfit$Ph+stanfit$delPhR[,Yr_odr]))
+    y_mean <- hockey_smooth(xplot, beta0=bb0$mean, delt=dde$mean, 
+                            phi=pph$mean, theta=0.01*diff(Xlim))
+    xx <- log(plotdata[,x])
+    yy <- log(plotdata[,y])
+    ## seasonal lines
+    y_sn <- matrix(0, ncol=length(xplot), nrow=n_sn)
+    for (i in 1:n_sn){
+      if (Additive) k <- i
+      else  k <- nstd_sns[i]
+      bb0_sn <- summary(rvsims(stanfit$B0+stanfit$delB0S[,k]))
+      dde_sn <- summary(rvsims(stanfit$De+stanfit$delDS[,k]))
+      pph_sn <- summary(rvsims(stanfit$Ph+stanfit$delPhS[,k]))
+      y_sn[i,] <- hockey_smooth(xplot, beta0=bb0_sn$mean, delt=dde_sn$mean, 
+                                phi=pph_sn$mean, theta=0.01*diff(Xlim))
+    }
+    if (is.null(Ylim)) Ylim <- range(c(y_sn, yy))+c(0,.5)
+    plot(xx, yy, xlim=Xlim, ylim=Ylim, col="gray", type="n", 
+         xlab="Chla ($\\mu$g/L))", ylab="MC ($\\mu$g/L)", axes=F)
+    lines(xplot, y_mean, lwd=3)
+    mtext(Yr, side=3, line=0, cex=0.75)
+    axis(1, at=log(c(1, 10, 50, 100, 200, 300, 400, 1000)), labels = c(1, 10, 50, 100, 200, 300, 400, 1000))
+    axis(2, at=log(c(0.1, 1, 10, 100, 200, 300, 400)), labels = c(0.1, 1, 10, 100, 200, 300, 400))
+    box()
+    for (i in 1:n_sn){
+      lines(xplot, y_sn[i,], col=i+1)
+        if (Additive) {
+          k <- i
+          tmp <- seasn==i
+        }else {
+          k <- nstd_sns[i]
+          tmp <- seasn==k
+        }
+        if (sum(tmp)>0)
+          points(log(plotdata[tmp,x]), 
+                 log(plotdata[tmp,y]), col=i+1, cex=0.5)
+    }
+    if (n_sn >3)
+      legend("topleft", pch=1, col=(1:n_sn)+1, legend=mnths, bty="n", cex=0.75, ncol=2)
+    else 
+      legend("topleft", pch=1, col=(1:n_sn)+1, legend=mnths, bty="n", cex=0.75)
+}
+
+annual_fig (Yr=2016, data=infile, stanfit=stanfit_full_nstd, Additive=F, 
+                       x="Chla", y="part_microcystin")
+  
+tikz(file="BHM_fit_nstd.tex", width=8, height=5, standAlone=T)
+par(mfrow=c(3,4), oma=c(3,3,3,1), mar=c(1.5,1.5,1,0.5), mgp=c(1.5, 0.125,0), tck=-0.01, las=1)
+for (i in 2008:2018)
+  annual_fig (Yr=i, data=infile, stanfit=stanfit_full_nstd, Additive=F, 
+                       x="Chla", y="part_microcystin")#, Xlim=range(log(infile$Chla)))
+mtext("Nested Month Effects", side=3, line=0, outer=T, las=0)
+mtext("MC ($\\mu$g/L)", side=2, line = 0, outer=T, las=0)
+mtext("Chla ($\\mu$g/L)", side=1, line = 0, outer=T, las=0)
+dev.off()
+
+tikz(file="BHM_fit_add.tex", width=8, height=5, standAlone=F)
+par(mfrow=c(3,4), oma=c(3,3,3,1), mar=c(1.5,1.5,1,0.5), mgp=c(1.5, 0.125,0), tck=-0.01, las=1)
+for (i in 2008:2018)
+  annual_fig (Yr=i, data=infile, stanfit=stanfit_full_add, Additive=T, 
+              x="Chla", y="part_microcystin")#, Xlim=range(log(infile$Chla))) 
+##              Ylim=range(log(infile$part_microcystin)))
+mtext("Additive Month Effects", side=3, line=0, outer=T, las=0)
+mtext("MC ($\\mu$g/L)", side=2, line = 0, outer=T, las=0)
+mtext("Chla ($\\mu$g/L)", side=1, line = 0, outer=T, las=0)
+dev.off()
+```
