@@ -1,3 +1,3 @@
 # ErieMC2023
-This repository includes R code and data for the Lake Erie algal bloom toxicity forecasting project.
-There are five Rmd files. To replicate the result, these files should be run in sequence. Some time-consuming tasks were commented out. The graphical device `tikz` is used to produce figures for a manuscript written in $\LaTeX$. 
+This repository includes (1) supporting information to the paper submitted to *Journal of Environmental Management* and (2) R code and Lake Erie algal bloom toxicity forecasting project data.
+There are five Rmd files. To replicate the result, these files should be run in sequence. Some time-consuming tasks were commented out. The graphical device `tikz` produces figures for the manuscript submitted to *Journal of Environmental Management* in $\LaTeX$. 
