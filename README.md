@@ -1,4 +1,6 @@
 # ErieMC2023
-This repository includes (1) supporting information (`mc_chla_ms2_SI.pdf`) to the paper submitted to *Journal of Environmental Management* and (2) R code and Lake Erie algal bloom toxicity forecasting project data.
+This repository includes (1) supporting information (`mc_chla_ms2_SI.pdf`) to Qian et al (2025) and (2) R code and Lake Erie algal bloom toxicity forecasting project data.
 
-There are five Rmd files. To replicate the result, these files should be run in sequence. Some time-consuming tasks were commented out. The graphical device `tikz` produces figures for the manuscript submitted to *Journal of Environmental Management* in $\LaTeX$. 
+There are five Rmd files. To replicate the result, these files should be run in sequence. Some time-consuming tasks were commented out. The graphical device `tikz` produces figures in Qian et al (2025) which was typeset using $\LaTeX$.
+
+Qian, S.S., Stow, C.A., and Jaffe, S. (2025) Short-term Probabilistic Microcystin Prediction using Bayesian Model Averaging. *Journal of Environmental Management* (to appear).
